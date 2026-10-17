@@ -1,0 +1,853 @@
+package com.yourname.pillpantry.ui.pantry
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.outlined.ShoppingCart
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import com.google.gson.GsonBuilder
+import com.yourname.pillpantry.data.BackupPayload
+import com.yourname.pillpantry.data.Grocery
+import com.yourname.pillpantry.data.PillPantryRepository
+import com.yourname.pillpantry.data.Vitamin
+import com.yourname.pillpantry.notifications.NotificationHelper
+import kotlinx.coroutines.launch
+import java.io.BufferedReader
+import java.io.InputStreamReader
+
+/** Background colors for list rows across the app — deliberately fixed
+ *  (not theme-derived) so groceries/vitamins stay visually distinct in
+ *  both light and dark mode. */
+val ListItemColor = Color(0xFF6395EE)      // groceries
+val VitaminItemColor = Color(0xFFFFA85D)   // vitamins
+
+private enum class PantryTab { GROCERIES, VITAMINS }
+
+@Composable
+fun PantryScreen(repository: PillPantryRepository) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var tab by remember { mutableStateOf(PantryTab.GROCERIES) }
+
+    val groceries by produceState(initialValue = emptyList<Grocery>()) {
+        repository.observeGroceries().collect { value = it }
+    }
+    val vitamins by produceState(initialValue = emptyList<Vitamin>()) {
+        repository.observeVitamins().collect { value = it }
+    }
+
+    // Delete confirmation state (shared between the two tabs)
+    var groceryPendingDelete by remember { mutableStateOf<Grocery?>(null) }
+    var vitaminPendingDelete by remember { mutableStateOf<Vitamin?>(null) }
+
+    // Manual restock dialog state
+    var groceryPendingRestock by remember { mutableStateOf<Grocery?>(null) }
+    var vitaminPendingRestock by remember { mutableStateOf<Vitamin?>(null) }
+    var restockAmountInput by remember { mutableStateOf("1") }
+
+    // Edit-settings dialog state
+    var groceryPendingEdit by remember { mutableStateOf<Grocery?>(null) }
+    var vitaminPendingEdit by remember { mutableStateOf<Vitamin?>(null) }
+
+    // Already-taken-today guard state
+    var alreadyTakenNotice by remember { mutableStateOf<Vitamin?>(null) }
+
+    // Manual grocery entry state
+    var showManualAddDialog by remember { mutableStateOf(false) }
+    var manualName by remember { mutableStateOf("") }
+    var manualQuantity by remember { mutableStateOf("1") }
+    var manualPortions by remember { mutableStateOf("1") }
+    var manualThreshold by remember { mutableStateOf("0") }
+
+    fun resetManualAddFields() {
+        manualName = ""
+        manualQuantity = "1"
+        manualPortions = "1"
+        manualThreshold = "0"
+    }
+
+    // Manual vitamin entry state
+    var showVitaminAddDialog by remember { mutableStateOf(false) }
+    var vitaminName by remember { mutableStateOf("") }
+    var vitaminDosage by remember { mutableStateOf("1") }
+    var vitaminThreshold by remember { mutableStateOf("10") }
+    var vitaminPillsPerBottle by remember { mutableStateOf("30") }
+
+    fun resetVitaminAddFields() {
+        vitaminName = ""
+        vitaminDosage = "1"
+        vitaminThreshold = "10"
+        vitaminPillsPerBottle = "30"
+    }
+
+    // Import/export state
+    var backupMessage by remember { mutableStateOf<String?>(null) }
+    val gson = remember { GsonBuilder().setPrettyPrinting().create() }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            try {
+                val payload = repository.exportBackup()
+                val json = gson.toJson(payload)
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(json.toByteArray())
+                }
+                backupMessage = "Backup saved (${payload.groceries.size} groceries, ${payload.vitamins.size} vitamins)"
+            } catch (e: Exception) {
+                backupMessage = "Export failed: ${e.message}"
+            }
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            try {
+                val json = context.contentResolver.openInputStream(uri)?.use { stream ->
+                    BufferedReader(InputStreamReader(stream)).readText()
+                } ?: throw IllegalStateException("Couldn't read file")
+                val payload = gson.fromJson(json, BackupPayload::class.java)
+                val summary = repository.importBackup(payload)
+                backupMessage = summary.message
+            } catch (e: Exception) {
+                backupMessage = "Import failed: ${e.message}"
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize().padding(top = 48.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TabChip("Groceries", tab == PantryTab.GROCERIES, Modifier.weight(1f)) {
+                    tab = PantryTab.GROCERIES
+                }
+                TabChip("Vitamins", tab == PantryTab.VITAMINS, Modifier.weight(1f)) {
+                    tab = PantryTab.VITAMINS
+                }
+                IconButton(onClick = {
+                    exportLauncher.launch("pillpantry-backup-${System.currentTimeMillis()}.json")
+                }) {
+                    Icon(
+                        Icons.Default.FileUpload,
+                        contentDescription = "Export data",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                IconButton(onClick = {
+                    importLauncher.launch(arrayOf("application/json"))
+                }) {
+                    Icon(
+                        Icons.Default.FileDownload,
+                        contentDescription = "Import data",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+
+            backupMessage?.let { msg ->
+                LaunchedEffect(msg) {
+                    kotlinx.coroutines.delay(4000)
+                    backupMessage = null
+                }
+                Text(
+                    msg,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedButton(onClick = {
+                    scope.launch {
+                        val result = repository.applyMissedPortionDecrements(context)
+                        backupMessage = result.message
+                    }
+                }) {
+                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Check/apply portion decay")
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Swipe an item right to restock, left to delete",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+
+            when (tab) {
+                PantryTab.GROCERIES -> {
+                    if (groceries.isEmpty()) {
+                        EmptyState("No groceries yet. Tap + to add one.")
+                    } else {
+                        LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 88.dp)) {
+                            items(groceries, key = { it.id }) { item ->
+                                SwipeActionRow(
+                                    itemKey = item.id,
+                                    onSwipeToDelete = { groceryPendingDelete = item },
+                                    onSwipeToRestock = {
+                                        restockAmountInput = "1"
+                                        groceryPendingRestock = item
+                                    }
+                                ) {
+                                    GroceryRow(
+                                        item = item,
+                                        onToggleShoppingList = {
+                                            scope.launch {
+                                                repository.setGroceryOnShoppingList(item.id, !item.onShoppingList)
+                                            }
+                                        },
+                                        onEdit = { groceryPendingEdit = item }
+                                    )
+                                }
+                                Spacer(Modifier.height(10.dp))
+                            }
+                        }
+                    }
+                }
+                PantryTab.VITAMINS -> {
+                    if (vitamins.isEmpty()) {
+                        EmptyState("No vitamins yet. Tap + to add one.")
+                    } else {
+                        LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 88.dp)) {
+                            items(vitamins, key = { it.id }) { vitamin ->
+                                SwipeActionRow(
+                                    itemKey = vitamin.id,
+                                    onSwipeToDelete = { vitaminPendingDelete = vitamin },
+                                    onSwipeToRestock = {
+                                        restockAmountInput = "30"
+                                        vitaminPendingRestock = vitamin
+                                    }
+                                ) {
+                                    VitaminRow(
+                                        vitamin = vitamin,
+                                        onTakeDose = {
+                                            if (vitamin.takenToday) {
+                                                alreadyTakenNotice = vitamin
+                                            } else {
+                                                scope.launch {
+                                                    val newCount = repository.takeDose(vitamin)
+                                                    if (newCount <= vitamin.refillThreshold) {
+                                                        NotificationHelper.sendRefillAlert(context, vitamin.name, newCount)
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        onEdit = { vitaminPendingEdit = vitamin }
+                                    )
+                                }
+                                Spacer(Modifier.height(10.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        FloatingActionButton(
+            onClick = {
+                if (tab == PantryTab.GROCERIES) {
+                    resetManualAddFields()
+                    showManualAddDialog = true
+                } else {
+                    resetVitaminAddFields()
+                    showVitaminAddDialog = true
+                }
+            },
+            containerColor = Color(0xFF00796B),
+            contentColor = Color.White,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(24.dp)
+        ) {
+            Icon(
+                Icons.Default.Add,
+                contentDescription = if (tab == PantryTab.GROCERIES) "Add grocery item" else "Add vitamin"
+            )
+        }
+    }
+
+    // --- Already-taken-today guard ---
+
+    alreadyTakenNotice?.let { vitamin ->
+        AlertDialog(
+            onDismissRequest = { alreadyTakenNotice = null },
+            title = { Text("Already taken today") },
+            text = {
+                Text(
+                    "You've already logged a dose of \"${vitamin.name}\" today. " +
+                        "Take another anyway?"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        val newCount = repository.takeDose(vitamin)
+                        if (newCount <= vitamin.refillThreshold) {
+                            NotificationHelper.sendRefillAlert(context, vitamin.name, newCount)
+                        }
+                    }
+                    alreadyTakenNotice = null
+                }) { Text("Take anyway") }
+            },
+            dismissButton = {
+                TextButton(onClick = { alreadyTakenNotice = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // --- Delete confirmations ---
+
+    groceryPendingDelete?.let { item ->
+        AlertDialog(
+            onDismissRequest = { groceryPendingDelete = null },
+            title = { Text("Delete \"${item.name}\"?") },
+            text = { Text("This removes it from your groceries list entirely.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { repository.deleteGrocery(item.id) }
+                    groceryPendingDelete = null
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { groceryPendingDelete = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    vitaminPendingDelete?.let { vitamin ->
+        AlertDialog(
+            onDismissRequest = { vitaminPendingDelete = null },
+            title = { Text("Delete \"${vitamin.name}\"?") },
+            text = { Text("This removes it from your vitamins list entirely.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { repository.deleteVitamin(vitamin.id) }
+                    vitaminPendingDelete = null
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { vitaminPendingDelete = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // --- Manual restock dialogs ---
+
+    groceryPendingRestock?.let { item ->
+        AlertDialog(
+            onDismissRequest = { groceryPendingRestock = null },
+            title = { Text("Restock \"${item.name}\"") },
+            text = {
+                Column {
+                    Text(
+                        "Each unit adds ${item.portionsPerUnit} portions.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = restockAmountInput,
+                        onValueChange = { restockAmountInput = it },
+                        label = { Text("Units to add") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val units = restockAmountInput.toLongOrNull()
+                    if (units != null && units > 0) {
+                        scope.launch { repository.restockGrocery(item, units) }
+                        groceryPendingRestock = null
+                    }
+                }) { Text("Add") }
+            },
+            dismissButton = {
+                TextButton(onClick = { groceryPendingRestock = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    vitaminPendingRestock?.let { vitamin ->
+        AlertDialog(
+            onDismissRequest = { vitaminPendingRestock = null },
+            title = { Text("Restock \"${vitamin.name}\"") },
+            text = {
+                OutlinedTextField(
+                    value = restockAmountInput,
+                    onValueChange = { restockAmountInput = it },
+                    label = { Text("Pills to add") },
+                    singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val pills = restockAmountInput.toLongOrNull()
+                    if (pills != null && pills > 0) {
+                        scope.launch { repository.restockVitamin(vitamin, pills) }
+                        vitaminPendingRestock = null
+                    }
+                }) { Text("Add") }
+            },
+            dismissButton = {
+                TextButton(onClick = { vitaminPendingRestock = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // --- Edit-settings dialogs ---
+
+    groceryPendingEdit?.let { item ->
+        var portionsPerUnitInput by remember(item.id) { mutableStateOf(item.portionsPerUnit.toString()) }
+        var thresholdInput by remember(item.id) { mutableStateOf(item.portionsThreshold.toString()) }
+
+        AlertDialog(
+            onDismissRequest = { groceryPendingEdit = null },
+            title = { Text("Edit \"${item.name}\"") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = portionsPerUnitInput,
+                        onValueChange = { portionsPerUnitInput = it },
+                        label = { Text("Portions per unit") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = thresholdInput,
+                        onValueChange = { thresholdInput = it },
+                        label = { Text("Refill at (portions)") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val perUnit = portionsPerUnitInput.toLongOrNull()
+                    val threshold = thresholdInput.toLongOrNull()
+                    if (perUnit != null && perUnit > 0 && threshold != null && threshold >= 0) {
+                        scope.launch { repository.updateGrocerySettings(item.id, perUnit, threshold) }
+                        groceryPendingEdit = null
+                    }
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { groceryPendingEdit = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    vitaminPendingEdit?.let { vitamin ->
+        var dosageInput by remember(vitamin.id) { mutableStateOf(vitamin.dailyDosage.toString()) }
+        var thresholdInput by remember(vitamin.id) { mutableStateOf(vitamin.refillThreshold.toString()) }
+
+        AlertDialog(
+            onDismissRequest = { vitaminPendingEdit = null },
+            title = { Text("Edit \"${vitamin.name}\"") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = dosageInput,
+                        onValueChange = { dosageInput = it },
+                        label = { Text("Pills per dose") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = thresholdInput,
+                        onValueChange = { thresholdInput = it },
+                        label = { Text("Refill at (pills)") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val dosage = dosageInput.toLongOrNull()
+                    val threshold = thresholdInput.toLongOrNull()
+                    if (dosage != null && dosage > 0 && threshold != null && threshold >= 0) {
+                        scope.launch { repository.updateVitaminSettings(vitamin.id, dosage, threshold) }
+                        vitaminPendingEdit = null
+                    }
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { vitaminPendingEdit = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // --- Manual grocery entry ---
+
+    if (showManualAddDialog) {
+        AlertDialog(
+            onDismissRequest = { showManualAddDialog = false },
+            title = { Text("Add Grocery Item") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = manualName,
+                        onValueChange = { manualName = it },
+                        label = { Text("Name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = manualQuantity,
+                        onValueChange = { manualQuantity = it },
+                        label = { Text("Quantity (units/packages)") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = manualPortions,
+                            onValueChange = { manualPortions = it },
+                            label = { Text("Portions") },
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = manualThreshold,
+                            onValueChange = { manualThreshold = it },
+                            label = { Text("Refill at") },
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Text(
+                        "Portions count down automatically each day (e.g. eggs: qty 1 carton, " +
+                            "3 portions left). Quantity is how many units/packages you have on hand.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val name = manualName.trim()
+                    val quantity = manualQuantity.toLongOrNull()
+                    val portions = manualPortions.toLongOrNull()
+                    val threshold = manualThreshold.toLongOrNull()
+                    if (name.isNotEmpty() && quantity != null && quantity > 0 &&
+                        portions != null && portions >= 0 && threshold != null && threshold >= 0
+                    ) {
+                        scope.launch { repository.addGrocery(name, quantity, portions, threshold) }
+                        showManualAddDialog = false
+                    }
+                }) { Text("Add") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showManualAddDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // --- Manual vitamin entry ---
+
+    if (showVitaminAddDialog) {
+        AlertDialog(
+            onDismissRequest = { showVitaminAddDialog = false },
+            title = { Text("Add Vitamin") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = vitaminName,
+                        onValueChange = { vitaminName = it },
+                        label = { Text("Name (e.g. Vitamin D3)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = vitaminDosage,
+                            onValueChange = { vitaminDosage = it },
+                            label = { Text("Pills per dose") },
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = vitaminThreshold,
+                            onValueChange = { vitaminThreshold = it },
+                            label = { Text("Refill at") },
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = vitaminPillsPerBottle,
+                        onValueChange = { vitaminPillsPerBottle = it },
+                        label = { Text("Pills in bottle now") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val name = vitaminName.trim()
+                    val dosage = vitaminDosage.toLongOrNull()
+                    val threshold = vitaminThreshold.toLongOrNull()
+                    val pills = vitaminPillsPerBottle.toLongOrNull()
+                    if (name.isNotEmpty() && dosage != null && dosage > 0 &&
+                        threshold != null && threshold >= 0 && pills != null && pills > 0
+                    ) {
+                        scope.launch { repository.addVitamin(name, dosage, threshold, pills) }
+                        showVitaminAddDialog = false
+                    }
+                }) { Text("Add") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showVitaminAddDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+}
+
+/**
+ * Wraps [content] in a swipeable row: swipe right (start-to-end) triggers
+ * [onSwipeToRestock], swipe left (end-to-start) triggers [onSwipeToDelete].
+ * Both calls snap the row back to settled rather than actually dismissing
+ * it — the database flow is what removes/updates the row once the
+ * corresponding repository call completes.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeActionRow(
+    itemKey: Any,
+    onSwipeToDelete: () -> Unit,
+    onSwipeToRestock: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    val state = key(itemKey) {
+        rememberSwipeToDismissBoxState(
+            confirmValueChange = { value ->
+                when (value) {
+                    SwipeToDismissBoxValue.EndToStart -> {
+                        onSwipeToDelete()
+                        false
+                    }
+                    SwipeToDismissBoxValue.StartToEnd -> {
+                        onSwipeToRestock()
+                        false
+                    }
+                    SwipeToDismissBoxValue.Settled -> true
+                }
+            },
+            // Needs a deliberate, nearly-full-width drag to commit, so
+            // vertical scrolling through the list doesn't trigger swipes.
+            positionalThreshold = { distance -> distance * 0.85f }
+        )
+    }
+
+    SwipeToDismissBox(
+        state = state,
+        backgroundContent = {
+            val (color, icon, alignment, label) = when (state.dismissDirection) {
+                SwipeToDismissBoxValue.StartToEnd ->
+                    SwipeBackground(Color(0xFF2E7D32), Icons.Default.Add, Alignment.CenterStart, "Restock")
+                SwipeToDismissBoxValue.EndToStart ->
+                    SwipeBackground(Color(0xFFC62828), Icons.Default.Delete, Alignment.CenterEnd, "Delete")
+                SwipeToDismissBoxValue.Settled ->
+                    SwipeBackground(Color.Transparent, null, Alignment.Center, "")
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(color, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 20.dp),
+                contentAlignment = alignment
+            ) {
+                if (icon != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(icon, contentDescription = label, tint = Color.White)
+                        Spacer(Modifier.width(6.dp))
+                        Text(label, color = Color.White, style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+        }
+    ) {
+        content()
+    }
+}
+
+private data class SwipeBackground(
+    val color: Color,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector?,
+    val alignment: Alignment,
+    val label: String
+)
+
+@Composable
+private fun TabChip(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Surface(
+        modifier = modifier,
+        color = if (selected) Color(0xFF00796B) else MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(8.dp),
+        onClick = onClick
+    ) {
+        Text(
+            label,
+            color = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(vertical = 10.dp),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            style = MaterialTheme.typography.labelLarge
+        )
+    }
+}
+
+@Composable
+private fun EmptyState(text: String) {
+    Box(modifier = Modifier.fillMaxSize().padding(top = 40.dp), contentAlignment = Alignment.TopCenter) {
+        Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun GroceryRow(item: Grocery, onToggleShoppingList: () -> Unit, onEdit: () -> Unit) {
+    Surface(shape = RoundedCornerShape(10.dp), color = ListItemColor, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(14.dp).fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(item.name, color = Color.White, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    buildAnnotatedString {
+                        withStyle(SpanStyle(color = Color.White.copy(alpha = 0.85f))) {
+                            append("Qty: ${item.quantity} · ${item.portions} portions left")
+                        }
+                        if (item.isLowOnPortions) {
+                            withStyle(SpanStyle(color = Color(0xFFFF1744), fontWeight = FontWeight.Bold)) {
+                                append(" · refill soon")
+                            }
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            IconButton(onClick = onEdit) {
+                Icon(Icons.Default.Edit, contentDescription = "Edit settings", tint = Color.White)
+            }
+            IconButton(onClick = onToggleShoppingList) {
+                Icon(
+                    imageVector = if (item.onShoppingList) {
+                        Icons.Filled.ShoppingCart
+                    } else {
+                        Icons.Outlined.ShoppingCart
+                    },
+                    contentDescription = if (item.onShoppingList) {
+                        "Remove from shopping list"
+                    } else {
+                        "Add to shopping list"
+                    },
+                    tint = Color.White
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VitaminRow(vitamin: Vitamin, onTakeDose: () -> Unit, onEdit: () -> Unit) {
+    Surface(shape = RoundedCornerShape(10.dp), color = VitaminItemColor, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(14.dp).fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(vitamin.name, color = Color.White, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    buildAnnotatedString {
+                        withStyle(SpanStyle(color = Color.White.copy(alpha = 0.9f))) {
+                            append("${vitamin.currentPills} pills left")
+                        }
+                        if (vitamin.isLow) {
+                            withStyle(SpanStyle(color = Color(0xFFFF1744), fontWeight = FontWeight.Bold)) {
+                                append(" · refill soon")
+                            }
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            IconButton(onClick = onEdit) {
+                Icon(Icons.Default.Edit, contentDescription = "Edit settings", tint = Color.White)
+            }
+            Button(
+                onClick = onTakeDose,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (vitamin.takenToday) Color.White.copy(alpha = 0.5f) else Color.White
+                )
+            ) {
+                Text(
+                    if (vitamin.takenToday) "Taken today" else "Take Dose",
+                    color = VitaminItemColor
+                )
+            }
+        }
+    }
+}
