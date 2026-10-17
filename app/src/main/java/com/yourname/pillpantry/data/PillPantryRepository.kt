@@ -165,21 +165,58 @@ class PillPantryRepository(private val db: AppDatabase) {
             newCount
         }
 
-    /** Edit a vitamin's dose size and refill threshold after creation. */
-    suspend fun updateVitaminSettings(vitaminId: Long, dailyDosage: Long, refillThreshold: Long) {
+    /**
+     * Edit everything about a vitamin by hand, including the current pill
+     * count. The shopping-list flag is re-evaluated against the threshold.
+     */
+    suspend fun updateVitamin(
+        vitaminId: Long,
+        name: String,
+        currentPills: Long,
+        dailyDosage: Long,
+        refillThreshold: Long
+    ) {
         val current = dao.getVitamin(vitaminId) ?: return
-        dao.updateVitamin(current.copy(dailyDosage = dailyDosage, refillThreshold = refillThreshold))
+        dao.updateVitamin(
+            current.copy(
+                name = name,
+                currentPills = currentPills,
+                dailyDosage = dailyDosage,
+                refillThreshold = refillThreshold,
+                onShoppingList = currentPills <= refillThreshold
+            )
+        )
     }
 
     /** Vitamins that haven't been logged today — used by the evening reminder. */
     suspend fun getVitaminsNotTakenToday(): List<Vitamin> =
         dao.getVitamins().filter { !it.takenToday }
 
-    /** Edit a grocery item's portions-per-unit and refill threshold after creation. */
-    suspend fun updateGrocerySettings(itemId: Long, portionsPerUnit: Long, portionsThreshold: Long) {
+    /**
+     * Edit everything about a grocery item by hand, including the current
+     * portions. [Grocery.lastPortionUpdate] is reset to now so the daily
+     * decay doesn't immediately subtract from the value just typed in, and
+     * the shopping-list flag is re-evaluated against the threshold.
+     */
+    suspend fun updateGrocery(
+        itemId: Long,
+        name: String,
+        quantity: Long,
+        portions: Long,
+        portionsPerUnit: Long,
+        portionsThreshold: Long
+    ) {
         val current = dao.getGrocery(itemId) ?: return
         dao.updateGrocery(
-            current.copy(portionsPerUnit = portionsPerUnit, portionsThreshold = portionsThreshold)
+            current.copy(
+                name = name,
+                quantity = quantity,
+                portions = portions,
+                portionsPerUnit = portionsPerUnit,
+                portionsThreshold = portionsThreshold,
+                lastPortionUpdate = System.currentTimeMillis(),
+                onShoppingList = portions <= portionsThreshold
+            )
         )
     }
 

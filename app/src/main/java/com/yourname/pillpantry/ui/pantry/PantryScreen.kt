@@ -6,6 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -438,17 +440,46 @@ fun PantryScreen(repository: PillPantryRepository) {
         )
     }
 
-    // --- Edit-settings dialogs ---
+    // --- Edit dialogs (everything is editable, including current counts) ---
 
     groceryPendingEdit?.let { item ->
+        var nameInput by remember(item.id) { mutableStateOf(item.name) }
+        var quantityInput by remember(item.id) { mutableStateOf(item.quantity.toString()) }
+        var portionsInput by remember(item.id) { mutableStateOf(item.portions.toString()) }
         var portionsPerUnitInput by remember(item.id) { mutableStateOf(item.portionsPerUnit.toString()) }
         var thresholdInput by remember(item.id) { mutableStateOf(item.portionsThreshold.toString()) }
 
         AlertDialog(
             onDismissRequest = { groceryPendingEdit = null },
-            title = { Text("Edit \"${item.name}\"") },
+            title = { Text("Edit item") },
             text = {
-                Column {
+                Column(modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    OutlinedTextField(
+                        value = nameInput,
+                        onValueChange = { nameInput = it },
+                        label = { Text("Name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = quantityInput,
+                        onValueChange = { quantityInput = it },
+                        label = { Text("Quantity (units/packages)") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = portionsInput,
+                        onValueChange = { portionsInput = it },
+                        label = { Text("Current portions left") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = portionsPerUnitInput,
                         onValueChange = { portionsPerUnitInput = it },
@@ -470,10 +501,18 @@ fun PantryScreen(repository: PillPantryRepository) {
             },
             confirmButton = {
                 TextButton(onClick = {
+                    val name = nameInput.trim()
+                    val quantity = quantityInput.toLongOrNull()
+                    val portions = portionsInput.toLongOrNull()
                     val perUnit = portionsPerUnitInput.toLongOrNull()
                     val threshold = thresholdInput.toLongOrNull()
-                    if (perUnit != null && perUnit > 0 && threshold != null && threshold >= 0) {
-                        scope.launch { repository.updateGrocerySettings(item.id, perUnit, threshold) }
+                    if (name.isNotEmpty() && quantity != null && quantity >= 0 &&
+                        portions != null && portions >= 0 &&
+                        perUnit != null && perUnit > 0 && threshold != null && threshold >= 0
+                    ) {
+                        scope.launch {
+                            repository.updateGrocery(item.id, name, quantity, portions, perUnit, threshold)
+                        }
                         groceryPendingEdit = null
                     }
                 }) { Text("Save") }
@@ -485,14 +524,33 @@ fun PantryScreen(repository: PillPantryRepository) {
     }
 
     vitaminPendingEdit?.let { vitamin ->
+        var nameInput by remember(vitamin.id) { mutableStateOf(vitamin.name) }
+        var pillsInput by remember(vitamin.id) { mutableStateOf(vitamin.currentPills.toString()) }
         var dosageInput by remember(vitamin.id) { mutableStateOf(vitamin.dailyDosage.toString()) }
         var thresholdInput by remember(vitamin.id) { mutableStateOf(vitamin.refillThreshold.toString()) }
 
         AlertDialog(
             onDismissRequest = { vitaminPendingEdit = null },
-            title = { Text("Edit \"${vitamin.name}\"") },
+            title = { Text("Edit vitamin") },
             text = {
-                Column {
+                Column(modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    OutlinedTextField(
+                        value = nameInput,
+                        onValueChange = { nameInput = it },
+                        label = { Text("Name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = pillsInput,
+                        onValueChange = { pillsInput = it },
+                        label = { Text("Current pills left") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = dosageInput,
                         onValueChange = { dosageInput = it },
@@ -514,10 +572,16 @@ fun PantryScreen(repository: PillPantryRepository) {
             },
             confirmButton = {
                 TextButton(onClick = {
+                    val name = nameInput.trim()
+                    val pills = pillsInput.toLongOrNull()
                     val dosage = dosageInput.toLongOrNull()
                     val threshold = thresholdInput.toLongOrNull()
-                    if (dosage != null && dosage > 0 && threshold != null && threshold >= 0) {
-                        scope.launch { repository.updateVitaminSettings(vitamin.id, dosage, threshold) }
+                    if (name.isNotEmpty() && pills != null && pills >= 0 &&
+                        dosage != null && dosage > 0 && threshold != null && threshold >= 0
+                    ) {
+                        scope.launch {
+                            repository.updateVitamin(vitamin.id, name, pills, dosage, threshold)
+                        }
                         vitaminPendingEdit = null
                     }
                 }) { Text("Save") }

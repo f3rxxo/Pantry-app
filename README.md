@@ -13,7 +13,7 @@ by hand; there is no barcode scanner.
   to add/remove an item from your shopping list) and vitamins list (orange
   rows, `#FFA85D`) with a "Take Dose" button. The floating **+** button adds
   a grocery (Groceries tab) or a vitamin (Vitamins tab) by hand. Each row has
-  an edit (pencil) icon for its settings. Swipe a row **right to restock** or
+  an edit (pencil) icon to change anything by hand, including the current portions / pills left. Swipe a row **right to restock** or
   **left to delete** (with confirmation) — the swipe needs a deliberate,
   mostly-full drag. Tapping "Take Dose" twice in one day asks for
   confirmation. Two icons next to the tabs export/import a JSON backup.
